@@ -18,7 +18,10 @@ package machine
 
 import (
 	"fmt"
+	"io/ioutil"
 	"math"
+	"path/filepath"
+	"strings"
 
 	info "github.com/google/cadvisor/info/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -609,4 +612,39 @@ type SiblingNumaInfo struct {
 	// averaged similarly.
 	SiblingNumaAvgMBWAllocatableMap map[int]int64
 	SiblingNumaAvgMBWCapacityMap    map[int]int64
+}
+
+// 判断是否具有 HBM
+func CheckHasHBM(numaNodeCounts int) (bool, error) {
+	for i := 0; i < numaNodeCounts; i++ {
+		hasCPU, hasMemory, err := CheckNUMANode(i)
+		if err != nil {
+			return false, fmt.Errorf("check wether has HBM failed;err is %v", err)
+		}
+		if !hasCPU && hasMemory {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// CheckNUMANode 判断指定的 NUMA 节点是否有 CPU 和内存,后面应该把这一部分存到初始化的数据结构中
+func CheckNUMANode(node int) (bool, bool, error) {
+	nodePath := fmt.Sprintf("/sys/devices/system/node/node%d", node)
+
+	// 检查 CPU 是否存在
+	cpuList, err := ioutil.ReadFile(filepath.Join(nodePath, "cpulist"))
+	if err != nil {
+		return false, false, fmt.Errorf("failed to read cpulist: %v", err)
+	}
+	hasCPU := strings.TrimSpace(string(cpuList)) != ""
+
+	// 检查内存是否存在
+	memInfo, err := ioutil.ReadFile(filepath.Join(nodePath, "meminfo"))
+	if err != nil {
+		return false, false, fmt.Errorf("failed to read meminfo: %v", err)
+	}
+	hasMem := strings.Contains(string(memInfo), "MemTotal:") && !strings.Contains(string(memInfo), "MemTotal: 0 kB")
+
+	return hasCPU, hasMem, nil
 }

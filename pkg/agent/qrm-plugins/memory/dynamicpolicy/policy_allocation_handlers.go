@@ -19,6 +19,7 @@ package dynamicpolicy
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -205,6 +206,59 @@ func (p *DynamicPolicy) numaBindingAllocationHandler(ctx context.Context,
 		"containerName", req.ContainerName,
 		"reqMemoryQuantity", podAggregatedRequest,
 		"numaAllocationResult", result.String())
+
+	// 判断是否是 ada 机型并且机器上带有 HBM; 如果是则 allocate 的时候同时 bind 拓扑亲和的普通内存节点和HBM
+	// todo1: HBM 亲和作为一个开关,默认关闭，支持在指定集群特定机器上打开
+	// todo2: HBM 信息写入 metaServer katalyst machine,只在初始化时计算一次
+	// todo3: 记录分配结果,亲和的 hbm numa 如果已经分配给了其他的容器，这时不要重复分配(假如有两个 numa 都亲和同一个 HBM numa)
+
+	isADAMachine := false
+	node, err := p.metaServer.NodeFetcher.GetNode(ctx)
+	if err != nil {
+		general.Warningf("unable to get current node,err is %v", err)
+	} else {
+		if node.Labels["xpu-type"] == "ada" {
+			general.Infof("this is ada machine")
+			isADAMachine = true
+		}
+	}
+
+	if isADAMachine {
+		general.Infof("check if this machine has HBM")
+		hasHBM, err := machine.CheckHasHBM(len(p.metaServer.KatalystMachineInfo.ExtraTopologyInfo.NumaDistanceMap))
+		if err != nil {
+			general.Warningf("CheckHasHBM failed,assume has no HBM;err: %v", err)
+			hasHBM = false
+		}
+		if hasHBM {
+			general.Infof("this machine has HBM,try to add HBM numa node")
+			for _, allocatedNUMAID := range result.ToSliceInt() {
+				// 从 8~15 numa 中找到 distance 最小的 numa id
+				minDistance := math.MaxInt
+				minDistanceHBMNumaID := -1
+				for _, info := range p.metaServer.KatalystMachineInfo.ExtraTopologyInfo.NumaDistanceMap[allocatedNUMAID] {
+					hasCPU, hasMemory, err := machine.CheckNUMANode(info.NumaID)
+					if err != nil {
+						continue
+					}
+					if !hasCPU && hasMemory {
+						if info.Distance < minDistance {
+							minDistance = info.Distance
+							minDistanceHBMNumaID = info.NumaID
+						}
+					}
+				}
+				if minDistanceHBMNumaID == -1 {
+					general.Infof("can't find the minDistanceHBM NUMA to numa[%v]", allocatedNUMAID)
+				} else {
+					general.Infof("found the minDistanceHBM NUMA[%v] to numa[%v] the minDistance is %v", minDistanceHBMNumaID, allocatedNUMAID, minDistance)
+					result.Add(minDistanceHBMNumaID)
+				}
+			}
+		}
+	} else {
+		general.Infof("not ada machine,no need to allocate HBM numa node")
+	}
 
 	allocationInfo = &state.AllocationInfo{
 		AllocationMeta:           state.GenerateMemoryContainerAllocationMeta(req, qosLevel),
