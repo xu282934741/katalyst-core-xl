@@ -18,6 +18,7 @@ package options
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	"k8s.io/apimachinery/pkg/util/errors"
@@ -52,11 +53,12 @@ type GenericOptions struct {
 }
 
 func NewGenericOptions() *GenericOptions {
+	port := os.Getenv("PORT0")
 	return &GenericOptions{
 		DryRun:                    false,
 		EnableHealthzCheck:        false,
 		TransformedInformerForPod: false,
-		GenericEndpoint:           ":9316",
+		GenericEndpoint:           fmt.Sprintf(":%v", port),
 		qosOptions:                NewQoSOptions(),
 		metricsOptions:            NewMetricsOptions(),
 		logsOptions:               NewLogsOptions(),
